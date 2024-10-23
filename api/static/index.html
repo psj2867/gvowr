@@ -1,0 +1,326 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+        canvas {
+            /* position: relative; */
+            left: calc(50% - 390px);
+            top: 50px;
+            border: 1px dotted black;
+            cursor: crosshair;
+            background: #ecf0f1;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <button id="start">start</button>
+        <input type="text" id="id">
+        <button id="connect">room</button>
+        <div id="conid"></div>
+        <div id="data"></div>
+        <div>my<input type="text" id="my"></div>
+        <div>remote<input type="text" id="remote"></div>
+        
+    </div>
+    <div id="container">
+    </div>
+
+    <script>
+        function makeCanvas() {
+            let base = document.getElementById("container")
+            let canvas = document.createElement("canvas");
+            canvas.style = "border: 2px solid; margin : 2px;";
+
+            base.appendChild(canvas);
+            const context = canvas.getContext('2d');
+            canvas.width = 320;
+            canvas.height = 240;
+
+            context.fillStyle = "white";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            context.strokeStyle = "#913d88";
+            context.lineWidth = 2;
+
+            canvas.onmousedown = startDrawing;
+            canvas.onmouseup = stopDrawing;
+            canvas.onmousemove = draw;
+            let isDrawing = false;
+            function startDrawing(e) {
+                isDrawing = true;
+                context.beginPath();
+                context.moveTo(e.pageX - canvas.offsetLeft, e.pageY - canvas.offsetTop);
+            }
+
+            function draw(e) {
+                if (isDrawing == true) {
+                    var x = e.pageX - canvas.offsetLeft;
+                    var y = e.pageY - canvas.offsetTop;
+
+                    context.lineTo(x, y);
+                    context.stroke();
+                }
+            }
+
+            function stopDrawing() {
+                isDrawing = false;
+            }
+
+            return canvas;
+        }
+        function addVideo() {
+            const base = document.getElementById("container");
+            const video = document.createElement("video");
+            video.setAttribute("playsinline", "");
+            video.setAttribute("autoplay", "");
+            video.setAttribute("muted", "");
+            video.style = "border:2px solid; margin : 2px;";
+            base.appendChild(video);
+            return video;
+        }
+    </script>
+
+
+    <script>
+        function uuidv4() {
+            return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+                (+c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> +c / 4).toString(16)
+            );
+            // return crypto.randomUUID()
+        }
+        class GvowrPeer{
+            constructor(source, peerOptions={host:"n1.psj2867.com", port:9000, debug:-1}){
+                this.id = uuidv4()
+                console.info(this.id)
+                this.peer = new Peer(this.id, peerOptions);                  
+                this._setDoneOpen()
+
+                //  <viewer> --datachannel{myid}->  <source> --streamChannel{video}->  <viewer>
+                // connect()
+                this._setConnectRequest_DataChannel()
+                this._setReceiveVideo()
+                this.source = source
+            }          
+            _setDoneOpen(){
+                this._isOpen = false
+                this._doneOpenRes = null
+                this._doneOpen = new Promise((r)=>{this._doneOpenRes =r})
+                this.peer.on('open', (m)=>{
+                    // this.id = this.peer.id
+                    this._doneOpenRes()
+                })
+            }              
+            async doneOpen(){
+                if(this._isOpen) return
+                await this._doneOpen
+                return
+            }  
+            async doneJoin(){
+                await this._doneJoin
+                return
+            }  
+
+            _setReceiveVideo(){
+                //   <viewer> --datachannel{myid}->  [ <source> --streamChannel{video}->  <viewer> ]
+                this.peer.on('call', (conn)=> {                    
+                    conn.answer();         
+                    conn.on('stream', (remoteStream)=> {
+                        let video = this.videoElement
+                        video.srcObject = remoteStream
+                        this.source = remoteStream
+                        this.remoteId = conn.peer
+                        this.postReceiveVideo(conn.peer)
+                        this._donJoinRes()
+                    });
+                    conn.on('iceStateChanged', ()=> {                        
+                        switch (conn.peerConnection.iceConnectionState) {
+                            case "disconnected":                                
+                            setTimeout(() => {
+                                if(conn.peerConnection.iceConnectionState == "disconnected"){
+                                    this.postFailView(this.remoteId)
+                                }
+                            }, 1000 * 1);                            
+                        }
+                    });
+                });      
+            }
+
+            _setConnectRequest_DataChannel(){
+                //   <viewer> [ --datachannel{myid}-> <source> --streamChannel{video} ]-> <viewer>
+                this.peer.on('connection', (conn)=> {
+                    conn.on('data', async (data)=>{
+                        // data = new TextDecoder().decode(data)
+                       this.connectVideo(data)
+                       conn.close()
+                    });
+                });     
+            }    
+            connectVideo(id){
+                console.info("connect video to ", id)        
+                this.videoConn = this.peer.call(id, this.source)
+                this.remoteId = id
+                this.videoConn.on('iceStateChanged', ()=> {                        
+                    switch (this.videoConn.peerConnection.iceConnectionState) {
+                        case "disconnected":                                
+                        setTimeout(() => {
+                            if(this.videoConn.peerConnection.iceConnectionState == "disconnected"){
+                                this.postFailSrc(this.remoteId)
+                            }
+                        }, 1000 * 1);                            
+                    }
+                });
+            }
+
+            async connect(id){
+                //  [ viewer --(datachannel{myid})-> ] source --streamChannel{video}-> viewer 
+                await this.doneOpen()            
+                this._doneJoin = new Promise((r,res)=>{
+                    this._donJoinRes = r
+                }) 
+                await this.sendId_DataChannel(id)    
+                
+            }
+            sendId_DataChannel(id, timeout=1000*5){
+                return new Promise((r, rej)=>{
+                    let conn = this.peer.connect(id)
+                    conn.on("open", ()=>{                        
+                        conn.send(this.id)
+                        r()
+                    })
+                    conn.on('close', function(data){
+                        r()
+                        conn.close()
+                    });
+                    setTimeout(() => {
+                        console.info(conn)
+                        rej()
+                    }, timeout);
+                })                
+            }
+
+            
+            async postReceiveVideo(remoteId){
+                let res = await fetch( this.server+"/node/connect/success", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            nodeid : this.id,
+                            roomid : this.roomid,
+                            remote : remoteId
+                        })
+                    })
+            }
+            
+            
+            async postFailSrc(remoteId){
+                let res = await fetch( this.server+"/node/connect/fail/src", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            nodeid : this.id,
+                            roomid : this.roomid,
+                            remote : remoteId
+                        })
+                    })
+            }
+            
+            
+            async postFailView(remoteId){
+                let res = await fetch( this.server+"/node/connect/fail/view", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            nodeid : this.id,
+                            roomid : this.roomid,
+                            remote : remoteId
+                        })
+                    })
+            }
+        }
+        class CvowrVideo{
+            constructor(server="http://localhost:5050"){
+                this.server = server
+                this.roomid = ""  
+                this.peer = new GvowrPeer()   
+                this.peer.server = this.server   
+                this.onDisconnect = ()=>{}
+            }
+            setVideoSource(){
+                let canvas = makeCanvas(document.getElementById('container'))
+                this.source = canvas.captureStream()
+            }
+            setVideoOuput(){
+                this.videoElement = addVideo()          
+            }
+            async newVideo(){
+                this.setVideoSource()       
+                this.peer.source = this.source 
+                await this.peer.doneOpen()
+                let res = await fetch( this.server+"/video/new", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            nodeid : this.peer.id
+                        })
+                    })
+                res = await res.json()
+                this.roomid = res["roomid"]         
+                this.peer.roomid = this.roomid
+                console.info(res)       
+                         
+            }
+            async joinVideo(roomid, retry=5){
+                this.setVideoOuput()
+                this.peer.videoElement = this.videoElement   
+                await this.peer.doneOpen()
+                for (let i = 0; i < retry; i++) {      
+                    try {
+                        await this._joinVideo(roomid)       
+                        return
+                    } catch (error) {
+                        console.info("connect fail retry ", i)                           
+                    }                    
+                }
+                throw "connect fail"
+            }
+            async _joinVideo(roomid){
+                await this.peer.doneOpen()             
+                
+                let res = await fetch( this.server+"/video/join", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            nodeid : this.peer.id,
+                            roomid : roomid
+                        })
+                    })      
+                if(res.status != 200){
+                    throw "/vide/join code="+ res.status + await res.text()
+                } 
+                res = await res.json()
+                this.remoteNodeid = res["nodeid"]
+                console.info(res)    
+                this.roomid = roomid 
+                this.peer.roomid = this.roomid
+                try {            
+                    await this.peer.connect(this.remoteNodeid)                    
+                    await this.peer.doneJoin()
+                } catch (error) {
+                    await this.peer.postFailView(this.remoteNodeid)
+                    throw error
+                }
+            }
+        }
+        // var gpeer = new GvowrPeer()
+        var gpeer = new CvowrVideo()
+        document.getElementById("my").value = gpeer.peer.id
+        document.getElementById("connect").addEventListener("click",(async ()=>{    
+            await gpeer.joinVideo(document.getElementById("id").value)
+            document.getElementById("remote").value = gpeer.peer.remoteId
+        }))
+        document.getElementById("start").addEventListener("click",(async ()=>{    
+            await gpeer.newVideo()
+            document.getElementById("id").value = gpeer.roomid
+        }))
+    </script>
+</body>
+</html>
